@@ -4,6 +4,9 @@ const Person = require('./models/person')
 const User = require('./models/user')
 const jwt = require('jsonwebtoken')
 
+const { PubSub } = require('apollo-server')
+const pubsub = new PubSub()
+
 mongoose.set('useFindAndModify', false)
 
 const JWT_SECRET = 'NEED_HERE_A_SECRET_KEY'
@@ -77,6 +80,10 @@ const typeDefs = gql`
       password: String!
     ): Token
   }  
+
+  type Subscription {
+    personAdded: Person!
+  }
 `
 const resolvers = {
   Query: {
@@ -119,6 +126,8 @@ const resolvers = {
           invalidArgs: args,
         })
       }
+
+      pubsub.publish('PERSON_ADDED', { personAdded: person })
 
       return person
     },
@@ -176,7 +185,12 @@ const resolvers = {
 
       return { value: jwt.sign(userForToken, JWT_SECRET) }
     },    
-  }
+  },
+  Subscription: {
+    personAdded: {
+      subscribe: () => pubsub.asyncIterator(['PERSON_ADDED'])
+    },
+  },
 }
 
 const server = new ApolloServer({
@@ -194,6 +208,7 @@ const server = new ApolloServer({
   }
 })
 
-server.listen().then(({ url }) => {
+server.listen().then(({ url, subscriptionsUrl }) => {
   console.log(`Server ready at ${url}`)
+  console.log(`Subscriptions ready at ${subscriptionsUrl}`)
 })
