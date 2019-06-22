@@ -1,10 +1,14 @@
-const { ApolloServer, UserInputError, gql } = require('apollo-server')
+const { ApolloServer, UserInputError, AuthenticationError, gql } = require('apollo-server')
 const mongoose = require('mongoose')
 const Person = require('./models/person')
+const User = require('./models/user')
+const jwt = require('jsonwebtoken')
 
 mongoose.set('useFindAndModify', false)
 
-const MONGODB_URI = 'mongodb+srv://fullstack:sekred@cluster0-ostce.mongodb.net/graphql?retryWrites=true'
+const JWT_SECRET = 'NEED_HERE_A_SECRET_KEY'
+
+const MONGODB_URI = 'mongodb+srv://fullstack:sekred@cluster0-ostce.mongodb.net/graphql-phonebook?retryWrites=true'
 
 console.log('commecting to', MONGODB_URI)
 
@@ -17,6 +21,16 @@ mongoose.connect(MONGODB_URI, { useNewUrlParser: true })
   })
 
 const typeDefs = gql`
+  type User {
+    username: String!
+    friends: [Person!]!
+    id: ID!
+  }
+
+  type Token {
+    value: String!
+  }
+
   type Address {
     street: String!
     city: String! 
@@ -38,6 +52,7 @@ const typeDefs = gql`
     personCount: Int!
     allPersons(phone: YesNo): [Person!]!
     findPerson(name: String!): Person
+    me: User
   }
 
   type Mutation {
@@ -51,6 +66,16 @@ const typeDefs = gql`
       name: String!
       phone: String!
     ): Person
+    addAsFriend(
+      name: String!
+    ): User
+    createUser(
+      username: String!
+    ): User
+    login(
+      username: String!
+      password: String!
+    ): Token
   }  
 `
 const resolvers = {
@@ -63,7 +88,10 @@ const resolvers = {
 
       return Person.find({ phone: { $exists: args.phone === 'YES' } })
     },
-    findPerson: (root, args) => Person.findOne({ name: args.name })
+    findPerson: (root, args) => Person.findOne({ name: args.name }),
+    me: (root, args, context) => {
+      return context.currentUser
+    }
   },
   Person: {
     address: root => {
@@ -74,11 +102,18 @@ const resolvers = {
     }
   },
   Mutation: {
-    addPerson: async (root, args) => {
+    addPerson: async (root, args, context) => {
       const person = new Person({ ...args })
+      const currentUser = context.currentUser
+
+      if (!currentUser) {
+        throw new AuthenticationError("not authenticated")
+      }
 
       try {
         await person.save()
+        currentUser.friends = currentUser.friends.concat(person)
+        await currentUser.save()
       } catch (error) {
         throw new UserInputError(error.message, {
           invalidArgs: args,
@@ -99,13 +134,64 @@ const resolvers = {
         })
       }
       return person
-    }
+    },
+    addAsFriend: async (root, args, { currentUser }) => {
+      const nonFriendAlready = (person) => 
+        !currentUser.friends.map(f => f._id).includes(person._id)
+
+      if (!currentUser) {
+        throw new AuthenticationError("not authenticated")
+      }
+
+      const person = await Person.findOne({ name: args.name })
+      if (nonFriendAlready(person)) {
+        currentUser.friends = currentUser.friends.concat(person)
+      }
+
+      await currentUser.save()
+
+      return currentUser
+    },
+    createUser: (root, args) => {
+      const user = new User({ username: args.username })
+
+      return user.save()
+        .catch(error => {
+          throw new UserInputError(error.message, {
+            invalidArgs: args,
+          })
+        })
+    },
+    login: async (root, args) => {
+      const user = await User.findOne({ username: args.username })
+
+      if (!user || args.password !== 'secred') {
+        throw new UserInputError("wrong credentials")
+      }
+
+      const userForToken = {
+        username: user.username,
+        id: user._id,
+      }
+
+      return { value: jwt.sign(userForToken, JWT_SECRET) }
+    },    
   }
 }
 
 const server = new ApolloServer({
   typeDefs,
   resolvers,
+  context: async ({ req }) => {
+    const auth = req ? req.headers.authorization : null
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
+      const decodedToken = jwt.verify(
+        auth.substring(7), JWT_SECRET
+      )
+      const currentUser = await User.findById(decodedToken.id).populate('friends')
+      return { currentUser }
+    }
+  }
 })
 
 server.listen().then(({ url }) => {
