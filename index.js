@@ -1,28 +1,20 @@
 const { ApolloServer, UserInputError, gql } = require('apollo-server')
-const uuid = require('uuid/v1')
+const mongoose = require('mongoose')
+const Person = require('./models/person')
 
-let persons = [
-  {
-    name: "Arto Hellas",
-    phone: "040-123543",
-    street: "Tapiolankatu 5 A",
-    city: "Espoo",
-    id: "3d594650-3436-11e9-bc57-8b80ba54c431"
-  },
-  {
-    name: "Matti Luukkainen",
-    phone: "040-432342",
-    street: "Malminkaari 10 A",
-    city: "Helsinki",
-    id: '3d599470-3436-11e9-bc57-8b80ba54c431'
-  },
-  {
-    name: "Venla Ruuska",
-    street: "Nallemäentie 22 C",
-    city: "Helsinki",
-    id: '3d599471-3436-11e9-bc57-8b80ba54c431'
-  },
-]
+mongoose.set('useFindAndModify', false)
+
+const MONGODB_URI = 'mongodb+srv://fullstack:sekred@cluster0-ostce.mongodb.net/graphql?retryWrites=true'
+
+console.log('commecting to', MONGODB_URI)
+
+mongoose.connect(MONGODB_URI, { useNewUrlParser: true })
+  .then(() => {
+    console.log('connected to MongoDB')
+  })
+  .catch((error) => {
+    console.log('error connection to MongoDB:', error.message)
+  })
 
 const typeDefs = gql`
   type Address {
@@ -61,25 +53,20 @@ const typeDefs = gql`
     ): Person
   }  
 `
-
 const resolvers = {
   Query: {
-    personCount: () => persons.length,
+    personCount: () => Person.collection.countDocuments(),
     allPersons: (root, args) => {
       if (!args.phone) {
-        return persons
+        return Person.find({})
       }
 
-      const byPhone = (person) =>
-        args.phone === 'YES' ? person.phone : !person.phone
-
-      return persons.filter(byPhone)
+      return Person.find({ phone: { $exists: args.phone === 'YES' } })
     },
-    findPerson: (root, args) =>
-      persons.find(p => p.name === args.name)
+    findPerson: (root, args) => Person.findOne({ name: args.name })
   },
   Person: {
-    address: (root) => {
+    address: root => {
       return {
         street: root.street,
         city: root.city
@@ -87,28 +74,33 @@ const resolvers = {
     }
   },
   Mutation: {
-    addPerson: (root, args) => {
-      if (persons.find(p => p.name === args.name)) {
-        throw new UserInputError('Name must be unique', {
-          invalidArgs: args.name,
+    addPerson: async (root, args) => {
+      const person = new Person({ ...args })
+
+      try {
+        await person.save()
+      } catch (error) {
+        throw new UserInputError(error.message, {
+          invalidArgs: args,
         })
       }
 
-      const person = { ...args, id: uuid() }
-      persons = persons.concat(person)
       return person
     },
-    editNumber: (root, args) => {
-      const person = persons.find(p => p.name === args.name)
-      if (!person) {
-        return null
-      }
+    editNumber: async (root, args) => {
+      const person = await Person.findOne({ name: args.name })
+      person.phone = args.phone
 
-      const updatedPerson = { ...person, phone: args.phone }
-      persons = persons.map(p => p.name === args.name ? updatedPerson : p)
-      return updatedPerson
+      try {
+        await person.save()
+      } catch (error) {
+        throw new UserInputError(error.message, {
+          invalidArgs: args,
+        })
+      }
+      return person
     }
-  }  
+  }
 }
 
 const server = new ApolloServer({
